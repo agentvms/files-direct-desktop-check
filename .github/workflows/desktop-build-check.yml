@@ -1,0 +1,41 @@
+# Throwaway check (files-direct-36, fd-7be): runs release.yml's desktop-build job as written there (only its "needs: release" line is left out), by hand, so the
+# Mac disk images and the Windows installer a version tag would build can be seen with their sizes. It publishes nothing and has no secrets.
+name: desktop-build-check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  desktop-build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac-arm64
+          - os: macos-15-intel
+            target: mac-x64
+          - os: windows-2022
+            target: win-x64
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci
+      - name: Build the app and the files a person downloads
+        run: node scripts/app-build.mjs ${{ matrix.target }} build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            app-out/files-direct-*
+          if-no-files-found: error
