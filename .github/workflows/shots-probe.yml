@@ -5,13 +5,9 @@ on:
 permissions:
   contents: read
 jobs:
-  shots:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022, windows-2025]
+  store-menu:
+    runs-on: windows-2025
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -19,11 +15,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22.14.0'
-      - name: Install the released v0.2.1 Windows installer and take the shots
+          cache: npm
+      - run: npm ci
+      - name: Build the Store package of this tree (test identity)
+        run: node scripts/app-store.mjs build
+      - name: Install it with a test certificate and show the right-click menu
         shell: powershell
-        run: ./scripts/shots.ps1
+        run: ./scripts/shots-store.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: shots-${{ matrix.os }}
-          path: shots
+          name: shots-store
+          path: |
+            shots
+            store-out/build-store.json

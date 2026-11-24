@@ -1,6 +1,6 @@
 {
   "name": "files-direct",
-  "version": "0.3.0",
+  "version": "0.2.1",
   "description": "Send and receive files and folders with Files Direct from a terminal or an AI agent, with no browser. Also runs as a local MCP server.",
   "mcpName": "com.tnyforge/files-direct",
   "type": "module",
