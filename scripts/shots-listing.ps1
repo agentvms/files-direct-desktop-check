@@ -67,8 +67,8 @@ function Compose($src, $rx, $ry, $rw, $rh, $scale, $name) {
   $src.Save((Join-Path $Raw ($name + '-raw.png')), [Drawing.Imaging.ImageFormat]::Png)
   $rx = [Math]::Max(0, [int]$rx); $ry = [Math]::Max(0, [int]$ry)
   $rw = [Math]::Min([int]$rw, $src.Width - $rx); $rh = [Math]::Min([int]$rh, $src.Height - $ry)
-  $out = New-Object Drawing.Bitmap 1920, 1080
-  $g = [Drawing.Graphics]::FromImage($out)
+  $canvas = New-Object Drawing.Bitmap 1920, 1080
+  $g = [Drawing.Graphics]::FromImage($canvas)
   $g.SmoothingMode = 'AntiAlias'; $g.InterpolationMode = 'HighQualityBicubic'; $g.PixelOffsetMode = 'HighQuality'
   $bg = New-Object Drawing.Drawing2D.LinearGradientBrush ((New-Object Drawing.Point 0, 0), (New-Object Drawing.Point 1920, 1080), [Drawing.Color]::FromArgb(236, 241, 246), [Drawing.Color]::FromArgb(206, 220, 236))
   $g.FillRectangle($bg, 0, 0, 1920, 1080)
@@ -77,9 +77,9 @@ function Compose($src, $rx, $ry, $rw, $rh, $scale, $name) {
   for ($i = 18; $i -ge 1; $i--) { $sh = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(5, 20, 40, 70)); $g.FillRectangle($sh, $dx - $i, $dy - $i + 8, $dw + 2 * $i, $dh + 2 * $i) }
   $g.DrawImage($src, (New-Object Drawing.Rectangle $dx, $dy, $dw, $dh), (New-Object Drawing.Rectangle $rx, $ry, $rw, $rh), [Drawing.GraphicsUnit]::Pixel)
   $g.Dispose()
-  $out.Save((Join-Path $Out ($name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
+  $canvas.Save((Join-Path $Out ($name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
   Say ("composed " + $name + ".png from " + $rw + "x" + $rh + " at scale " + $scale)
-  $out.Dispose(); $src.Dispose()
+  $canvas.Dispose(); $src.Dispose()
 }
 function WindowRect($class, $title) {
   $cond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ClassNameProperty, $class)
@@ -138,7 +138,11 @@ if (-not $tray) {
 if ($tray) {
   $c = Center $tray; Click $c[0] $c[1] $true; Start-Sleep 2
   $img = Grab
-  $m = WindowRect '#32768' $null
+  $m = $null
+  foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition)) {
+    $b = $e.Current.BoundingRectangle
+    if ($b.Width -gt 80 -and $b.Width -lt 450 -and $b.Height -gt 80 -and $b.Height -lt 450 -and -not $e.Current.IsOffscreen) { Say ("top-level candidate: " + $e.Current.ClassName + " | " + $e.Current.Name + " | " + $b.X + "," + $b.Y + " " + $b.Width + "x" + $b.Height); if (-not $m -and ($e.Current.ClassName -like 'WindowsForms10*' -or $e.Current.ClassName -eq '#32768')) { $m = $e } }
+  }
   if ($m) { $r = $m.Current.BoundingRectangle; Say ("tray menu rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height); Compose $img ($r.X - 6) ($r.Y - 6) ($r.Width + 12) ($r.Height + 12) 3.2 '1-tray-menu' }
   else { Say "NOT MADE: 1-tray-menu: the menu window was not found"; $img.Dispose() }
   [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep 1; [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
