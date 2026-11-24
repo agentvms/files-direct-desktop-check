@@ -1,10 +1,11 @@
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
-import { rm } from 'node:fs/promises';
+import { rm, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { cleanNote } from '../../shared/ask.ts';
 import { formatCode } from '../../shared/code.ts';
+import { cleanDeviceName } from '../../shared/pair.ts';
 import { doorOf } from './door.ts';
 import { TEST_LANE_HEADER } from '../../shared/config.ts';
 import { PASSWORD_MAX_CHARS } from '../../shared/config.ts';
@@ -14,6 +15,11 @@ import { type GatherOptions, gather } from './gather.ts';
 import { type Launch, type MenuEffects, MenuUnsupported, installMenu, menuStatus, removeMenu } from './menu.ts';
 import { nodeEffects } from './menu-node.ts';
 import { Desk, serveDesk } from './window.ts';
+import { PairHost, guessComputerName, programView } from './pair-host.ts';
+import { runListen } from './listen.ts';
+import { SavedBook } from './saved.ts';
+import { receiveSaved, runDevices } from './saved-run.ts';
+import { dataLeftovers, devicesFile } from './store.ts';
 import { BUILT_UPDATE_KEY, VERSION, installLine, originFrom, roomEnv } from './config.ts';
 import { type AppInfo, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, tidyUpdates, updateFolder } from './app-install.ts';
 import { UpdateRefused, checkForUpdate, downloadUpdate, refusalText } from './update.ts';
@@ -56,9 +62,12 @@ export const USAGE = `Files Direct: send and receive files and folders from a te
 
 Usage:
   files-direct send <file or folder>... [--password <word>] [--allow-code] [--timeout <minutes>] [--json]
-  files-direct receive <link or nine-digit code> [--to <folder>] [--max-size <size>] [--overwrite] [--password <word>] [--json]
+  files-direct receive <link or nine-digit code> [--to <folder>] [--max-size <size>] [--overwrite] [--password <word>] [--remember [--name <name>]] [--json]
+  files-direct receive --saved [--to <folder>] [--max-size <size>] [--overwrite] [--timeout <minutes>] [--json]
+  files-direct devices [forget <number or name>] [--json]
   files-direct ask [--note <text>] [--to <folder>] [--timeout <minutes>] [--max-size <size>] [--max-files <number>] [--allow-code] [--password <word>] [--json]
   files-direct open [<file or folder>...] [--to <folder>] [--no-window]   open the Files Direct window (what the right-click menu runs)
+  files-direct listen [--json]                      keep running and open the window when a device this computer remembers asks to send (what the Files Direct app's tray does)
   files-direct menu install | remove | status      add or take out "Send with Files Direct" in Finder (Mac) or File Explorer (Windows)
   files-direct update check | install [--json]      for the Files Direct app: look for a newer version, or install it (checked against our own key first)
   files-direct app remove                           for the Files Direct app on a Mac: take out its menu entry and every folder it made
@@ -80,6 +89,11 @@ other device has joined and you see it accept. --no-window prints the window's a
 
 Menu install adds the entry for you only, with no administrator: on a Mac a Quick Action in ~/Library/Services, on Windows the entry for files and folders (under "Show more
 options" on Windows 11) and a Send to shortcut. Run menu remove before you uninstall the program: it takes out exactly what install put in.
+
+Remembering a device: add --remember to receive. Once the other device is connected, this computer asks it to remember it (the other person is asked, and sees the name you give with --name,
+default this computer's own name; it is kept only on the two devices). It also says yes when the other device asks. From then on, the other device offers "Send to <name>" while this computer is
+waiting, with no link or code: files-direct receive --saved waits for it, takes one batch by the same rules as receive, and ends. devices lists what this computer remembers (kept in one file in
+your own data folder, readable by you only); devices forget <number or name> ends it here and on the other device.
 
 --json prints one JSON object per line instead of text, and ends with {"event":"finished"} or {"event":"failed","reason":"..."}.
 Exit status: 0 done, 2 the command was typed wrong, 3 the other side said no (or, for ask, sent nothing in time), 4 could not get in, 5 a limit (wait and try again),
@@ -129,10 +143,39 @@ function describe(e: ProgramEvent, tty: boolean): string | null {
       return e.by === 'this' ? 'Paused.' : 'The other side paused the transfer.';
     case 'resumed':
       return 'Carrying on.';
+    case 'remember':
+      return e.state === 'offered'
+        ? 'Asking the other device to remember this computer…'
+        : e.state === 'asked'
+          ? 'The other device asked to be remembered. Saying yes (--remember).'
+          : e.state === 'saved'
+            ? `Remembered ${e.name ?? 'the other device'}. It can now ask to send to this computer with no link or code: files-direct receive --saved`
+            : rememberFailed(e.why);
+    case 'invite':
+      return `${e.device} asks to send.`;
+    case 'listening':
+      return `Waiting for a device this computer remembers (${e.devices}).`;
+    case 'forgotten':
+      return `${e.device} forgot this computer, so it is no longer kept here.`;
     case 'finished':
       return null;
     case 'failed':
       return null;
+  }
+}
+
+function rememberFailed(why: string | undefined): string {
+  switch (why) {
+    case 'declined':
+      return 'The other device said no thanks. Nothing was saved.';
+    case 'full':
+      return 'This computer or the other device already remembers 10 devices. Forget one (files-direct devices forget), then try again.';
+    case 'busy':
+      return 'Both sides asked at once, so neither went on. Try again.';
+    case 'timed-out':
+      return 'No answer, so nothing was saved.';
+    default:
+      return 'That did not work, so nothing was saved.';
   }
 }
 
@@ -153,7 +196,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     io.out(VERSION);
     return 0;
   }
-  if (command !== 'send' && command !== 'receive' && command !== 'ask' && command !== 'open' && command !== 'menu' && command !== 'update' && command !== 'app') {
+  if (command !== 'send' && command !== 'receive' && command !== 'ask' && command !== 'open' && command !== 'menu' && command !== 'update' && command !== 'app' && command !== 'devices' && command !== 'listen') {
     io.err(`Unknown command "${command}". Run files-direct help.`);
     return 2;
   }
@@ -182,6 +225,9 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
         'paths-stdin': { type: 'boolean' },
         launcher: { type: 'string' },
         'wait-for': { type: 'string' },
+        saved: { type: 'boolean' },
+        remember: { type: 'boolean' },
+        name: { type: 'string' },
       },
     });
   } catch (e) {
@@ -199,6 +245,13 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
   if (command === 'app') return runApp(args.positionals, io);
   if (command === 'open' && v.detach) return detach(rest, io);
   const origin = originFrom(v.site, io.env);
+  const lane0 = io.env.FD_TEST_LANE_TOKEN;
+  const headers0 = lane0 ? { [TEST_LANE_HEADER]: lane0 } : undefined;
+  if (command === 'devices') {
+    // listing needs no site; forgetting tells the site that the pair is over
+    if (!origin && args.positionals[0] === 'forget') return usage('No site address: pass --site <address> or set FILES_DIRECT_ORIGIN.');
+    return runDevices(args.positionals, new SavedBook(devicesFile(io.env), { origin: origin ?? '', headers: headers0 }), io, json);
+  }
   if (!origin) return usage('No site address: pass --site <address> or set FILES_DIRECT_ORIGIN.');
   if (command === 'update') return runUpdate(args.positionals, { json, waitFor: v['wait-for'] }, io, origin);
   const password = v.password ?? io.env.FILES_DIRECT_PASSWORD;
@@ -224,9 +277,10 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
   };
 
   installBrowserParts();
+  if (command === 'listen') return runListen({ app: Boolean(v.app), noWindow: Boolean(v['no-window']), json, io, env: await roomEnv(origin, headers, true, Boolean(v.app)), book: new SavedBook(devicesFile(io.env), { origin, headers }), downloads: resolve(v.to ?? join(io.env.HOME ?? io.env.USERPROFILE ?? homedir(), 'Downloads')), emit });
   if (command === 'open') return runOpen(args.positionals, { gather: Boolean(v.gather), noWindow: Boolean(v['no-window']), to: v.to, json, pathsStdin: Boolean(v['paths-stdin']) }, io, await roomEnv(origin, headers, true, Boolean(v.app)), usage);
   const env = await roomEnv(origin, headers);
-  let run;
+  let run: { done: Promise<Result>; cancel(): void };
   if (command === 'send') {
     if (args.positionals.length === 0) return usage('Name at least one file or folder to send.');
     let picked;
@@ -254,7 +308,22 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     if (!Number.isInteger(maxFiles) || maxFiles < 1) return usage('--max-files takes a whole number of files, 1 or more.');
     run = ask(env, { note: v.note, dest: resolve(v.to ?? '.'), maxSize, maxFiles, password, allowCode: Boolean(v['allow-code']), waitMs: minutes * 60_000 }, emit);
     if (!json) io.out('Asking for files' + (cleanNote(v.note ?? '') ? `: "${cleanNote(v.note ?? '')}"` : '') + '.');
+  } else if (v.saved) {
+    if (args.positionals.length > 0 || v.remember) return usage('--saved waits for a device this computer remembers: it takes no link or code, and no --remember.');
+    const book = new SavedBook(devicesFile(io.env), { origin, headers });
+    if (book.devices().length === 0) return usage('This computer remembers no devices. Remember one first: files-direct receive <link> --remember.');
+    const minutes = v.timeout === undefined ? 30 : Number(v.timeout);
+    if (!Number.isFinite(minutes) || minutes < 0) return usage('--timeout takes a number of minutes (0 waits for ever).');
+    let maxSize: number | undefined;
+    if (v['max-size'] !== undefined) {
+      const n = parseSize(v['max-size']);
+      if (n === null) return usage('--max-size takes a size such as 500MB or 2GB.');
+      maxSize = n;
+    }
+    run = receiveSaved(env, book, { dest: resolve(v.to ?? '.'), maxSize, overwrite: Boolean(v.overwrite), minutes, emit });
+    if (!json) io.out('Waiting for a device this computer remembers to ask to send. Keep this running until it does.');
   } else {
+    if (v.name !== undefined && !v.remember) return usage('--name goes with --remember.');
     const [what] = args.positionals;
     if (!what || args.positionals.length > 1) return usage('Give the link or the nine-digit code of one room.');
     const door = doorOf(what, origin);
@@ -265,7 +334,14 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
       if (n === null) return usage('--max-size takes a size such as 500MB or 2GB.');
       maxSize = n;
     }
-    run = receive(env, { target: door, dest: resolve(v.to ?? '.'), maxSize, overwrite: Boolean(v.overwrite), password }, emit);
+    let pair: PairHost | undefined;
+    if (v.remember) {
+      const book = new SavedBook(devicesFile(io.env), { origin, headers });
+      const name = v.name === undefined ? undefined : cleanDeviceName(v.name);
+      if (v.name !== undefined && !name) return usage('--name needs a name.');
+      pair = new PairHost({ kv: book.kv, where: book.where, guess: guessComputerName, view: programView({ offer: true, accept: true, name, say: (n) => emit({ event: 'remember', ...n }) }) });
+    }
+    run = receive(env, { target: door, dest: resolve(v.to ?? '.'), maxSize, overwrite: Boolean(v.overwrite), password, pair }, emit);
   }
   const stop = io.onInterrupt?.(() => run.cancel());
   const result: Result = await run.done;
@@ -352,7 +428,7 @@ async function runOpen(
     }
   }
   const downloads = resolve(o.to ?? join(io.env.HOME ?? io.env.USERPROFILE ?? homedir(), 'Downloads'));
-  const desk = new Desk({ env, downloads, picked });
+  const desk = new Desk({ env, downloads, picked, book: new SavedBook(devicesFile(io.env), { origin: env.origin, headers: env.headers }) });
   const server = await serveDesk(desk, { idleMs: io.windowIdleMs });
   const stopInterrupt = io.onInterrupt?.(() => desk.abandon());
   let handle: WindowHandle | null = null;
@@ -406,7 +482,9 @@ async function runApp(words: string[], io: Io): Promise<number> {
   const fx = io.menu ?? nodeEffects(io.env);
   try {
     const bundle = io.update && 'info' in io.update ? io.update.info?.bundle : io.program ? readAppInfo(io.program.script)?.bundle : undefined;
-    const gone = await removeApp(fx, [io.update?.dir ?? updateFolder(tmpdir()), ...(await stagingBeside(bundle))]);
+    const data = dataLeftovers(io.env);
+    const gone = await removeApp(fx, [io.update?.dir ?? updateFolder(tmpdir()), ...(await stagingBeside(bundle)), ...data.paths]);
+    if (data.folder && (await rmdir(data.folder).then(() => true, () => false))) gone.push('Removed ' + data.folder + '.');
     for (const l of gone.length ? gone : ['There was nothing to remove.']) io.out(l);
     return 0;
   } catch (e) {

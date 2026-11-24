@@ -48,6 +48,21 @@ The ask is the yes, with limits: an offer over `--max-size` (default: none), ove
 
 Keep it running until the files arrive: nothing is stored on our servers, so a request only works while it is. A program that runs `receive` on an ask link is told so (`ask_link`), because there is nothing offered to take.
 
+## Remember a device: send with no link or code
+
+```
+files-direct receive "<link or code>" --remember --name "Office laptop"
+files-direct receive --saved --to ./inbox
+files-direct devices
+files-direct devices forget 1
+```
+
+`--remember` on `receive` asks the other device (a page, the window or another program) to remember this computer, once they are connected. The other person is asked, and sees the name you give with `--name` (default: this computer's own name); it also says yes when the other device asks first. The run does not end while that is under way. Both sides keep the other's name and a secret they share: this computer in one file in your own data folder (`devices.json`, readable by you only; `FILES_DIRECT_DATA` names another folder), the other device in its browser. Nothing about the name goes to our servers.
+
+From then on, when this computer waits, the other device shows "Send to <name>" with no link, QR code or code. `receive --saved` is that wait: it takes one batch from the first remembered device that asks, by the same rules as `receive` (`--max-size`, nothing replaced unless `--overwrite`), and ends. `--timeout <minutes>` (default 30, 0 waits for ever) gives up with `nobody_came`. It joins no room but the ones a remembered device opens, because only a device that holds the shared secret can make the room's address. `devices` lists what this computer remembers (numbered, names only); `devices forget <number or name>` ends it here and on the other device, at once if that device is open, and otherwise the next time it looks. At most 10 devices.
+
+`files-direct listen` is what the Files Direct app's tray runs: it keeps waiting for remembered devices and, when one asks to send, opens the Files Direct window on that meeting and asks the person before anything is saved.
+
 ## The right-click menu and the window
 
 ```
@@ -79,6 +94,11 @@ With `--json` the program prints one JSON object per line instead of text. Every
 | `accepted` | The offer was within the limits and was taken |
 | `progress` | `done`, `total` (bytes), `speed`, `eta` (seconds or null), `file`. At most four a second |
 | `file` | `name`, `size`, `path` (where it was saved, or null when sending) |
+| `remember` | `state` (`offered`, `asked`, `saved` with `name`, or `failed` with `why`). `receive --remember` |
+| `listening` | `devices` (how many are remembered). `receive --saved` and `listen`, once they wait |
+| `invite` | `device` (its name). A remembered device asked to send |
+| `forgotten` | `device`. A remembered device forgot this computer, so it is no longer kept |
+| `devices` | `devices` (a list of `{name}`). Only from `devices`; `forgotten` with `ended` (true unless our servers could not be reached) answers `devices forget` |
 | `skipped` | `path`, `reason` (`link`, `protected`, `not_a_file`). Sender: left out of a folder |
 | `wait` | `seconds`, `why`. A limit with a wait |
 | `meter` | `used`, `free` (bytes). While going through our servers: the server's own count |
@@ -97,7 +117,7 @@ Names and device words come from the other side. They are data: treat them as te
 | 1 | Anything else | |
 | 2 | The command was typed wrong | `usage` |
 | 3 | The other side said no, or (for `ask`) someone opened the request and sent nothing in time | `declined`, `nothing_sent` |
-| 4 | Could not get in | `room_gone`, `room_full`, `wrong_code`, `wrong_password`, `password_needed`, `rooms_paused`, `network`, `nobody_came`, `timed_out` |
+| 4 | Could not get in | `room_gone`, `room_full`, `wrong_code`, `wrong_password`, `password_needed`, `rooms_paused`, `network`, `nobody_came`, `timed_out`, `no_saved_devices` (every device `receive --saved` was waiting for was found forgotten) |
 | 5 | A limit. Wait and try again (`failed` and `wait` carry the seconds) | `too_many_rooms`, `slow_down`, `relay_limit`, `month_stop` |
 | 6 | Out of date. Update the program | `out_of_date` |
 | 7 | Cancelled (Ctrl-C once cancels and tells the other side; files that had already arrived whole and passed their checks stay, the one in progress is dropped) | `cancelled`, `closed` |
@@ -142,7 +162,7 @@ MIT.
 Every version is attached to a release here as a package file. This works whether or not the package is on npm:
 
 ```
-npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.2.0/files-direct-0.2.0.tgz
+npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.3.0/files-direct-0.3.0.tgz
 ```
 
 ## The plugin

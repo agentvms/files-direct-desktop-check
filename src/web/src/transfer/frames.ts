@@ -56,7 +56,16 @@ export type Control =
   | { t: 'decline'; b: number }
   | { t: 'pause'; b: number }
   | { t: 'resume'; b: number }
-  | { t: 'cancel'; b: number };
+  | { t: 'cancel'; b: number }
+  /**
+   * Saved devices (files-direct-39, docs/PROTOCOL.md "Saved devices"): the two pages agree to remember each other. Not part of a batch, so no `b`. The engine only carries it
+   * (a frame over PAIR_WIRE_MAX bytes is dropped); the page reads it. A page from before it never says it is able (the room passes on a yes-or-no word), so none is sent to one.
+   */
+  | PairWire;
+
+/** What the two pages say to each other to remember each other. Names and the pair secret travel here, over the connection, and nowhere else. */
+export type PairWire = { t: 'pair'; p: 'offer' | 'accept' | 'decline' | 'secret' | 'done' | 'cancel' | 'name'; name?: string; secret?: string; why?: string };
+export const PAIR_WIRE_MAX = 1024;
 
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', data as BufferSource));

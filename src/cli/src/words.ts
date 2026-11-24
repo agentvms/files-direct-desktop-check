@@ -33,6 +33,7 @@ export const REASONS = [
   'nothing_to_send',
   'nothing_sent',
   'ask_link',
+  'no_saved_devices',
 ] as const;
 export type Reason = (typeof REASONS)[number];
 export type Outcome = 'finished' | Reason;
@@ -70,6 +71,7 @@ export const EXIT: Record<Outcome, number> = {
   nothing_to_send: 9,
   nothing_sent: 3,
   ask_link: 9,
+  no_saved_devices: 4,
 };
 
 /** "30 seconds", "2 minutes", "1 hour". */
@@ -147,6 +149,8 @@ export function reasonText(reason: Outcome, ctx: { wait?: number; install?: stri
       return 'There is nothing to send: no files were found in what was named.';
     case 'nothing_sent':
       return 'Someone opened the request, but no files came in time, so the room was closed.';
+    case 'no_saved_devices':
+      return 'This computer remembers no devices now, so there is nobody to wait for. Remember one first: files-direct receive <link> --remember.';
     case 'ask_link':
       return 'This link asks for files. It does not offer any. Open it in a browser to choose files, or send your own with files-direct send.';
   }

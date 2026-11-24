@@ -40,6 +40,19 @@ func startEngine(_ args: [String]) {
     try? p.run()
 }
 
+/// Starts the engine's listener (files-direct-40) and gives it back, so the app can end it when it quits. It holds the connection to every device this computer remembers while the app runs,
+/// and opens the Files Direct window when one asks to send. It also ends by itself within seconds of this program going away.
+func startListener() -> Process? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: nodePath)
+    p.arguments = [enginePath, "listen", "--app"]
+    p.standardInput = FileHandle.nullDevice
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return nil }
+    return p
+}
+
 /// The last line of the engine's output that is a JSON object.
 func lastJSON(_ text: String) -> [String: Any]? {
     for line in text.split(separator: "\n").reversed() {
@@ -61,6 +74,11 @@ func alert(_ title: String, _ info: String, _ buttons: [String] = ["OK"]) -> Int
 
 final class Delegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem?
+    var listener: Process?
+
+    func applicationWillTerminate(_ note: Notification) {
+        listener?.terminate()
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // one menu-bar program at a time
@@ -94,6 +112,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
         bar.menu = menu
         item = bar
         installEntry()
+        listener = startListener()
         if CommandLine.arguments.contains("--update-now") { updateNow() }
     }
 

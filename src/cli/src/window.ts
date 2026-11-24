@@ -13,13 +13,30 @@ import { formatCode } from '../../shared/code.ts';
 import { doorOf } from './door.ts';
 import { etaText, size } from './format.ts';
 import { qrSvg } from './qr.ts';
+import { cleanDeviceName } from '../../shared/pair.ts';
+import type { SavedDevice } from '../../web/src/devices.ts';
+import type { RememberView } from '../../web/src/remember.ts';
+import { SAVED } from '../../web/src/saved-copy.ts';
+import { PairHost, guessComputerName } from './pair-host.ts';
+import { APP_SAVED } from './window-copy.ts';
 import { type ProgramEvent, type Result, type Run, type RoomEnv, ask, receive, send } from './room.ts';
+import { type SavedBook, meetingSecret } from './saved.ts';
 import type { Picked, Skipped } from './fs-source.ts';
 import { EXIT, type Outcome, reasonText } from './words.ts';
 import { windowPage, windowPolicy } from './window-page.ts';
 
 export type Phase = 'home' | 'waiting' | 'connecting' | 'transferring' | 'done' | 'failed' | 'cancelled';
 export type Job = 'send' | 'ask' | 'receive';
+
+/** What the window shows about remembering the device on the other side (files-direct-40). Words are the site's own (web/src/saved-copy.ts). */
+export type RememberCard =
+  | { state: 'idle' }
+  | { state: 'form'; start: string }
+  | { state: 'waiting' }
+  | { state: 'asked'; text: string; start: string }
+  | { state: 'saved'; text: string }
+  | { state: 'problem'; text: string; again: boolean };
+
 
 /** Everything the page draws, already in words. Names are data from the other side or from this computer: the page shows them as text. */
 export interface Snapshot {
@@ -39,10 +56,19 @@ export interface Snapshot {
   progressText: string;
   progressFile: string;
   where: string;
+  /** Saved devices (files-direct-40): the start page lists them, a room offers to remember the device on the other side, and a saved device that asks to send is answered here. Absent from a window with none. */
+  devices?: { id: string; name: string }[];
+  remember?: RememberCard;
+  /** A batch from a saved device waits for the person's yes. */
+  offer?: boolean;
 }
 
 export interface DeskOptions {
   env: RoomEnv;
+  /** The devices this computer remembers. Without it, nothing of saved devices is offered. */
+  book?: SavedBook;
+  /** A saved device asked to send (the program that keeps watching hands it over): the window opens on that meeting. */
+  invited?: { dev: SavedDevice; nonce: string };
   /** Where what the window receives is saved. Chosen by the program (the person's Downloads folder, or --to), never by the page. */
   downloads: string;
   /** What to send: from the program's arguments. None: the window opens on its start page. */
@@ -73,12 +99,18 @@ export class Desk {
   private savedCount = 0;
   private who = '';
   private how = '';
+  /** What the buttons of the remember card press now (set by the view below), and the answer to a batch from a saved device. */
+  private card: { offer?: () => void; ok?: (name: string) => void; cancel?: () => void; no?: () => void; again?: () => void } = {};
+  private offerAnswer: ((yes: boolean) => void) | null = null;
+  /** The name of the saved device this window was opened for, while it is that meeting. */
+  private fromSaved = '';
 
   constructor(private readonly o: DeskOptions) {
     this.ended = new Promise((r) => (this.resolveEnded = r));
     this.s = this.fresh('home');
     this.s.where = o.downloads;
-    if (o.picked && o.picked.files.length > 0) this.startSend(o.picked.files, o.picked.skipped);
+    if (o.invited) void this.startJob(() => this.startSaved(o.invited!.dev, o.invited!.nonce));
+    else if (o.picked && o.picked.files.length > 0) this.startSend(o.picked.files, o.picked.skipped);
   }
 
   private fresh(phase: Phase): Snapshot {
@@ -86,7 +118,11 @@ export class Desk {
   }
 
   snapshot(): Snapshot {
-    return { ...this.s, items: [...this.s.items], progress: { ...this.s.progress } };
+    const snap: Snapshot = { ...this.s, items: [...this.s.items], progress: { ...this.s.progress } };
+    // the start page lists the devices this computer remembers; with none, it is the page it always was
+    const kept = this.s.phase === 'home' ? (this.o.book?.devices() ?? []) : [];
+    if (kept.length > 0) snap.devices = kept.map((d) => ({ id: d.id, name: d.name }));
+    return snap;
   }
 
   // ---- what the page presses --------------------------------------------------------------------
@@ -105,6 +141,31 @@ export class Desk {
       case 'turn-away':
         this.answer?.(b.do === 'allow');
         return { ok: true };
+      case 'accept':
+      case 'no-thanks':
+        this.offerAnswer?.(b.do === 'accept');
+        return { ok: true };
+      case 'remember':
+        this.card.offer?.();
+        return { ok: true };
+      case 'remember-ok':
+        this.card.ok?.(typeof b.name === 'string' ? b.name : '');
+        return { ok: true };
+      case 'remember-cancel':
+        this.card.cancel?.();
+        return { ok: true };
+      case 'remember-no':
+        this.card.no?.();
+        return { ok: true };
+      case 'remember-again':
+        this.card.again?.();
+        return { ok: true };
+      case 'forget': {
+        const dev = this.o.book?.devices().find((d) => d.id === b.id);
+        if (!dev || !this.o.book) return { ok: false, error: 'That device is not remembered here.' };
+        await this.o.book.forget(dev);
+        return { ok: true };
+      }
       case 'ask': {
         const note = typeof b.note === 'string' ? b.note : '';
         return this.startJob(() => this.startAsk(note));
@@ -167,20 +228,20 @@ export class Desk {
     this.sentList = list.slice(0, MAX_SHOWN).map((f) => ({ name: f.name, size: size(f.size) }));
     this.sentMore = Math.max(0, list.length - MAX_SHOWN);
     this.s = { ...this.fresh('connecting'), job: 'send', title: `Send ${files(list.length)} (${size(total)})`, sub: 'Nothing leaves this computer until the other device has joined and you see it accept.', status: 'Opening a room…', items: this.sentList, more: this.sentMore, progress: { done: 0, total } };
-    this.begin(send(this.o.env, { files: list, skipped, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000 }, (e) => this.onEvent(e)), 'send');
+    this.begin(send(this.o.env, { files: list, skipped, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000, pair: this.makePair() }, (e) => this.onEvent(e)), 'send');
   }
 
   /**
    * One job at a time. The place is taken before anything is awaited, so a double click or two tabs cannot start two engines; it is given up if the
    * folder cannot be made, and a window closed while the folder is being made starts nothing.
    */
-  private async startJob(begin: () => void): Promise<{ ok: boolean; error?: string }> {
+  private async startJob(begin: () => void | Promise<void>): Promise<{ ok: boolean; error?: string }> {
     if (this.starting || this.run || this.closing) return { ok: false, error: 'Something is already open in this window.' };
     this.starting = true;
     try {
       await mkdir(this.o.downloads, { recursive: true });
       if (this.closing) return { ok: false, error: 'The window was closed.' };
-      begin();
+      await begin();
       return { ok: true };
     } catch {
       return { ok: false, error: 'The folder for saved files could not be made.' };
@@ -192,12 +253,58 @@ export class Desk {
   private startAsk(note: string): void {
     const asked = cleanNote(note);
     this.s = { ...this.fresh('connecting'), job: 'ask', title: 'Asking for files', sub: (asked ? `"${asked}". ` : '') + 'The files come straight to ' + this.o.downloads + '. Nothing is replaced.', status: 'Opening a room…' };
-    this.begin(ask(this.o.env, { note: asked, dest: this.o.downloads, maxFiles: 1000, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000 }, (e) => this.onEvent(e)), 'ask');
+    this.begin(ask(this.o.env, { note: asked, dest: this.o.downloads, maxFiles: 1000, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000, pair: this.makePair() }, (e) => this.onEvent(e)), 'ask');
   }
 
   private startReceive(door: NonNullable<ReturnType<typeof doorOf>>): void {
     this.s = { ...this.fresh('connecting'), job: 'receive', title: 'Receiving files', sub: 'They are saved straight to ' + this.o.downloads + ' and checked. Nothing is replaced.', status: 'Connecting…' };
-    this.begin(receive(this.o.env, { target: door, dest: this.o.downloads }, (e) => this.onEvent(e)), 'receive');
+    this.begin(receive(this.o.env, { target: door, dest: this.o.downloads, pair: this.makePair() }, (e) => this.onEvent(e)), 'receive');
+  }
+
+  /** A saved device asked to send: join its meeting, and take nothing before the person at the window says yes. */
+  private async startSaved(dev: SavedDevice, nonce: string): Promise<void> {
+    const secret = await meetingSecret(dev, nonce);
+    if (this.closing) return;
+    this.fromSaved = dev.name;
+    this.s = { ...this.fresh('connecting'), job: 'receive', title: APP_SAVED.invited(dev.name), sub: 'They are saved straight to ' + this.o.downloads + ' and checked. Nothing is replaced.', status: APP_SAVED.connecting(dev.name) };
+    const pair = new PairHost({ kv: this.o.book!.kv, where: this.o.book!.where, guess: guessComputerName, saved: dev });
+    const confirm = () =>
+      new Promise<boolean>((resolve) => {
+        this.s.offer = true;
+        this.offerAnswer = (yes) => {
+          this.offerAnswer = null;
+          delete this.s.offer;
+          resolve(yes);
+        };
+      });
+    this.begin(receive(this.o.env, { target: { kind: 'link', secret }, dest: this.o.downloads, pair, confirm }, (e) => this.onEvent(e)), 'receive');
+  }
+
+  /** The saved-devices code for a run in a normal room (a link, a code or a QR code): it offers to remember the device on the other side. None when the window was given no file of saved devices. */
+  private makePair(): PairHost | undefined {
+    const book = this.o.book;
+    return book ? new PairHost({ kv: book.kv, where: book.where, guess: guessComputerName, view: this.rememberView() }) : undefined;
+  }
+
+  /** What the remember card shows and what its buttons press: the page asks the program, so the person's answers go through here. */
+  private rememberView(): RememberView {
+    const show = (c: RememberCard | null, fns: Desk['card'] = {}) => {
+      this.card = fns;
+      if (c) this.s.remember = c;
+      else delete this.s.remember;
+    };
+    return {
+      idle: (offer) => show(offer ? { state: 'idle' } : null, offer ? { offer } : {}),
+      form: (start, ok, cancel) => show({ state: 'form', start }, { ok, cancel }),
+      waiting: () => show({ state: 'waiting' }),
+      asked: (their, start, ok, no) => show({ state: 'asked', start, text: SAVED.asked(this.who || 'another device', cleanDeviceName(their)) }, { ok, no }),
+      saved: (their) => show({ state: 'saved', text: APP_SAVED.saved(their) }),
+      problem: (why, again) =>
+        show(
+          { state: 'problem', again: again !== null, text: why === 'full' ? 'One of you already remembers 10 devices. Forget one (open the Files Direct window with nothing in it, under Saved devices), then try again.' : why === 'not-saved' ? 'This computer would not keep it, so nothing was saved.' : SAVED.problem(why) },
+          again ? { again } : {},
+        ),
+    };
   }
 
   private begin(run: Run, job: Job): void {
@@ -238,7 +345,8 @@ export class Desk {
         if (s.job !== 'send') {
           s.items = e.names.slice(0, MAX_SHOWN).map((n) => ({ name: n.name, size: size(n.size) }));
           s.more = Math.max(0, e.files - MAX_SHOWN);
-          s.title = `Receiving ${files(e.files)} (${size(e.bytes)})`;
+          s.title = this.fromSaved ? APP_SAVED.offer(this.fromSaved, files(e.files), size(e.bytes)) : `Receiving ${files(e.files)} (${size(e.bytes)})`;
+          if (this.fromSaved) s.sub = APP_SAVED.offerSub;
         }
         break;
       case 'accepted':
@@ -271,6 +379,11 @@ export class Desk {
     const s = this.s;
     s.knock = false;
     this.answer?.(false);
+    this.offerAnswer?.(false);
+    delete s.offer;
+    // a card that says it was remembered, or why not, stays on the closing screen; a question that was never answered goes
+    if (s.remember && s.remember.state !== 'saved' && s.remember.state !== 'problem') delete s.remember;
+    this.card = {};
     const ok = r.outcome === 'finished';
     s.phase = ok ? 'done' : r.outcome === 'cancelled' || r.outcome === 'closed' ? 'cancelled' : 'failed';
     s.link = null;

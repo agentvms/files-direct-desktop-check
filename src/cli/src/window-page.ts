@@ -1,5 +1,8 @@
 import { ASK_NOTE_MAX_CHARS } from '../../shared/config.ts';
 import { COLOURS, rootVars } from '../../shared/tokens.ts';
+import { DEVICE_NAME_MAX } from '../../shared/pair.ts';
+import { SAVED } from '../../web/src/saved-copy.ts';
+import { APP_SAVED } from './window-copy.ts';
 
 /**
  * The page the Files Direct window shows (files-direct-30). It is only a picture of what the program is doing: it asks the program for the state, and
@@ -50,16 +53,42 @@ progress::-moz-progress-bar{background:var(--fd-pine-600);border-radius:var(--fd
 .ask{display:flex;flex-direction:column;gap:8px;background:var(--fd-inset);border-radius:var(--fd-radius-tray);padding:14px}
 .knock{background:var(--fd-amber-bg);color:var(--fd-amber-ink);border-radius:var(--fd-radius-tray);padding:12px;display:flex;flex-direction:column;gap:8px}
 .err{color:var(--fd-danger-ink);font-size:.8125rem}
+label{font-size:.8125rem;font-weight:600}
+.card-title{font-weight:650}
+.card[data-state=problem] p{color:var(--fd-danger-ink)}
+.hint{color:var(--fd-ink-muted);font-size:.8125rem}
 .actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 [hidden]{display:none!important}
 `;
 
+/** The sentences the page shows about saved devices: the site's own where they fit (the same words as on the site), and the app's where they do not. */
+const WORDS = {
+  remember: SAVED.remember,
+  hint: SAVED.rememberHint,
+  nameLabel: SAVED.nameLabel,
+  nameHelp: SAVED.nameHelp,
+  ok: SAVED.ok,
+  cancel: SAVED.cancel,
+  noThanks: SAVED.noThanks,
+  tryAgain: SAVED.tryAgain,
+  waiting: SAVED.waiting,
+  savedTitle: SAVED.savedTitle,
+  panelTitle: APP_SAVED.panelTitle,
+  panelHelp: APP_SAVED.panelHelp,
+  forget: APP_SAVED.forget,
+  forgetPrefix: APP_SAVED.forgetLabel(''),
+  accept: APP_SAVED.accept,
+  declineOffer: APP_SAVED.noThanks,
+};
+
 const SCRIPT = `
 'use strict';
+const T = ${JSON.stringify(WORDS)};
+const NAME_MAX = ${DEVICE_NAME_MAX};
 const base = location.pathname.replace(/[^/]*$/, '');
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
-let last = '';
+let last = ''; let lastPhase = '';
 async function act(body) {
   const res = await fetch(base + 'act', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   return res.json().catch(() => ({ ok: false }));
@@ -98,6 +127,47 @@ function head(title, sub, tile) { const h = el('div', 'head'); if (tile) { const
 function actions(...b) { const a = el('div', 'actions'); a.append(...b); return a; }
 function button(text, cls, fn) { const b = el('button', cls, text); b.onclick = fn; return b; }
 
+function devices(list) {
+  const box = el('div', 'ask');
+  box.append(el('h2', '', T.panelTitle), el('div', 'small', T.panelHelp));
+  const ul = el('ul', 'files');
+  for (const d of list) {
+    const li = el('li'); li.append(el('span', 'n', d.name));
+    const b = button(T.forget, '', () => act({ do: 'forget', id: d.id })); b.setAttribute('aria-label', T.forgetPrefix + d.name);
+    li.append(b); ul.append(li);
+  }
+  box.append(ul);
+  return box;
+}
+
+function nameField(start) {
+  const input = el('input'); input.type = 'text'; input.id = 'device-name'; input.value = start; input.maxLength = NAME_MAX; input.autocomplete = 'off'; input.spellcheck = false;
+  const label = el('label', '', T.nameLabel); label.htmlFor = 'device-name';
+  return { input, parts: [label, input, el('div', 'hint', T.nameHelp)] };
+}
+
+// "Remember this device", in the room: the same questions and words as on the site. The program does the remembering; the page only shows the question and says what was pressed.
+function remember(r) {
+  if (r.state === 'idle') {
+    const box = el('div', 'ask');
+    const b = button(T.remember, '', () => act({ do: 'remember' })); b.id = 'remember';
+    box.append(b, el('div', 'hint', T.hint));
+    return box;
+  }
+  const c = el('section', 'ask card'); c.id = 'remember-card'; c.dataset.state = r.state; c.setAttribute('aria-live', 'polite');
+  if (r.state === 'form' || r.state === 'asked') {
+    const f = nameField(r.start);
+    const go = () => act({ do: 'remember-ok', name: f.input.value });
+    f.input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+    c.append(el('p', 'card-title', T.remember));
+    if (r.state === 'asked') c.append(el('p', '', r.text));
+    c.append(...f.parts, actions(button(T.ok, 'primary', go), r.state === 'form' ? button(T.cancel, '', () => act({ do: 'remember-cancel' })) : button(T.noThanks, '', () => act({ do: 'remember-no' }))));
+  } else if (r.state === 'waiting') c.append(el('p', 'card-title', T.remember), el('p', '', T.waiting));
+  else if (r.state === 'saved') c.append(el('p', 'card-title', T.savedTitle), el('p', '', r.text));
+  else { const t = el('p', '', r.text); t.setAttribute('role', 'alert'); c.append(t); if (r.again) c.append(actions(button(T.tryAgain, '', () => act({ do: 'remember-again' })))); }
+  return c;
+}
+
 function home(s) {
   const p = el('div', 'parcel');
   p.append(head('Files Direct', 'Send files and folders straight to another device. Nothing is kept on our servers.'));
@@ -113,7 +183,9 @@ function home(s) {
   const go = async () => { const r = await act({ do: 'receive', target: t.value }); if (!r.ok) { err.textContent = r.error || 'That did not work.'; err.hidden = false; } };
   t.onkeydown = (e) => { if (e.key === 'Enter') go(); };
   rec.append(t, err, actions(button('Receive', 'primary', go)));
-  p.append(ask, rec, el('div', 'small', 'Saved files go to ' + s.where + '. Nothing is replaced.'), actions(button('Close', '', () => act({ do: 'close' }))));
+  p.append(ask, rec);
+  if (s.devices && s.devices.length) p.append(devices(s.devices));
+  p.append(el('div', 'small', 'Saved files go to ' + s.where + '. Nothing is replaced.'), actions(button('Close', '', () => act({ do: 'close' }))));
   return p;
 }
 
@@ -123,6 +195,7 @@ function room(s) {
   if (s.phase === 'done' || s.phase === 'failed' || s.phase === 'cancelled') {
     p.append(head(s.title, s.message, s.phase === 'done' ? 'ok' : 'bad'));
     if (s.items.length) p.append(list(s.items, s.more));
+    if (s.remember) p.append(remember(s.remember));
     p.append(actions(button('Close', 'primary', () => act({ do: 'close' }))));
     return p;
   }
@@ -140,6 +213,8 @@ function room(s) {
     const c = el('div', 'count'); c.append(el('span', '', s.progressText), el('span', '', s.progressFile));
     p.append(pr, c);
   } else p.append(status(s.status, live));
+  if (s.offer) p.append(actions(button(T.declineOffer, '', () => act({ do: 'no-thanks' })), button(T.accept, 'primary', () => act({ do: 'accept' }))));
+  if (s.remember) p.append(remember(s.remember));
   p.append(actions(button('Cancel', '', () => act({ do: 'cancel' }))));
   return p;
 }
@@ -149,9 +224,13 @@ function draw(s) {
   if (key === last) return;
   const typing = document.activeElement && document.activeElement.tagName === 'INPUT' && !document.activeElement.readOnly;
   if (typing && s.phase === 'home' && last.indexOf('"phase":"home"') >= 0) return; // do not take the page from under a person who is typing
-  last = key;
+  // nor from under a person who is typing a name for this device, while the room goes on
+  if (typing && document.activeElement.id === 'device-name' && s.remember && (s.remember.state === 'form' || s.remember.state === 'asked') && lastPhase === s.phase) return;
+  const before = last;
+  last = key; lastPhase = s.phase;
   const main = $('main'); clear(main);
   main.append(s.phase === 'home' ? home(s) : room(s));
+  const nameBox = $('device-name'); if (nameBox && before.indexOf('"remember":{"state":"' + (s.remember && s.remember.state) + '"') < 0) { nameBox.focus(); nameBox.select(); }
   // only the closing screens take the focus: a stray key must never answer "let them in"
   const f = main.querySelector('button.primary'); if (f && (s.phase === 'done' || s.phase === 'failed' || s.phase === 'cancelled')) f.focus();
 }

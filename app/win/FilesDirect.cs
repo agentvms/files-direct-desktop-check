@@ -5,13 +5,16 @@
 //   1. "Files Direct.exe verb <path>" and "Files Direct.exe sendto <paths...>" (what the right-click entry and Send to start): it hands the chosen paths to the program's
 //      engine (files-direct.mjs, run by the Node in this folder) on the engine's standard input, one after another, each ended by a NUL byte (a path cannot hold one).
 //      The paths are NEVER put into a command line, so a name made of quotes, spaces, "&", "%" or "^" is only ever a name.
-//   2. With no arguments it is the tray icon and its menu. Every menu item starts the engine with fixed words; the files the person picks go in on the standard input.
+//   2. "Files Direct.exe paths-stdin": the same, for the Store package's menu handler (files-direct-37), which is given everything that was selected at once and writes the paths to this
+//      program's standard input itself (NUL-separated, nothing in a command line), so the whole selection is one room and no waiting for the others is needed.
+//   3. With no arguments it is the tray icon and its menu. Every menu item starts the engine with fixed words; the files the person picks go in on the standard input.
 // Built with FD_NAIVE defined it does the careless thing instead (the paths pasted into the command line, unquoted): the checks use that build to show that a hostile name
 // breaks it, so that the real build passing means something.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -26,12 +29,38 @@ namespace FilesDirect
         static string Node { get { return Path.Combine(Here, "node.exe"); } }
         static string Engine { get { return Path.Combine(Here, "files-direct.mjs"); } }
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern int GetCurrentPackageFullName(ref int length, StringBuilder name);
+
+        static bool? packaged;
+        /// <summary>True when this runs as the Microsoft Store package: the package is installed, updated and removed by the Store, and its menu entry is in its manifest.</summary>
+        public static bool Packaged
+        {
+            get
+            {
+                if (packaged == null)
+                {
+                    try
+                    {
+                        int length = 0;
+                        packaged = GetCurrentPackageFullName(ref length, null) != 15700; // APPMODEL_ERROR_NO_PACKAGE: a program that is not packaged has no package name
+                    }
+                    catch (Exception) { packaged = false; } // an older Windows has no such call: it is not packaged
+                }
+                return packaged.Value;
+            }
+        }
+
         [STAThread]
         static int Main(string[] args)
         {
             if (args.Length >= 1 && (args[0] == "verb" || args[0] == "sendto"))
             {
                 return args.Length < 2 ? 2 : HandOver(args[0], new List<string>(args).GetRange(1, args.Length - 1));
+            }
+            if (args.Length == 1 && args[0] == "paths-stdin")
+            {
+                return FromStdin();
             }
             if (args.Length >= 1 && args[0] == "quit")
             {
@@ -52,6 +81,29 @@ namespace FilesDirect
                 }
             }
             return 0;
+        }
+
+        /// <summary>The menu handler of the Store package writes the chosen paths here, each ended by a NUL byte (a path cannot hold one). They go on to the engine the same way.</summary>
+        static int FromStdin()
+        {
+            List<string> paths = new List<string>();
+            byte[] all;
+            using (Stream input = Console.OpenStandardInput())
+            using (MemoryStream copy = new MemoryStream())
+            {
+                input.CopyTo(copy);
+                all = copy.ToArray();
+            }
+            int start = 0;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] == 0)
+                {
+                    if (i > start) paths.Add(new UTF8Encoding(false).GetString(all, start, i - start));
+                    start = i + 1;
+                }
+            }
+            return paths.Count == 0 ? 2 : HandOver("send", paths);
         }
 
         static ProcessStartInfo Engine_(string words)
@@ -97,6 +149,12 @@ namespace FilesDirect
         public static void Start(string words)
         {
             try { Process.Start(Engine_(words)); } catch (Exception) { }
+        }
+
+        /// <summary>Starts the engine and gives the process back, so the tray can end it when it quits (the listener of files-direct-40). Null when it did not start.</summary>
+        public static Process StartKept(string words)
+        {
+            try { return Process.Start(Engine_(words)); } catch (Exception) { return null; }
         }
 
         /// <summary>Runs the engine and waits; returns what it printed. The words are fixed.</summary>
@@ -150,6 +208,8 @@ namespace FilesDirect
         readonly SynchronizationContext ui;
         readonly string version;
         readonly EventWaitHandle quitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\FilesDirectTrayQuit");
+        /// <summary>The engine's listener (files-direct-40): it holds the connection to every device this computer remembers while the app runs, and opens the window when one asks to send. It also ends by itself within seconds of this program going away.</summary>
+        Process listener;
 
         public Tray(bool updateNow)
         {
@@ -164,9 +224,13 @@ namespace FilesDirect
             menu.Items.Add("Ask for files", null, delegate { Program.Start("open --app"); });
             menu.Items.Add("Receive by link or code", null, delegate { Program.Start("open --app"); });
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Check for updates…", null, delegate { CheckForUpdates(); });
-            menu.Items.Add("Remove Files Direct…", null, delegate { RemoveApp(); });
-            menu.Items.Add(new ToolStripSeparator());
+            // the Store package is updated and removed by the Store (Settings, Apps), not by this program
+            if (!Program.Packaged)
+            {
+                menu.Items.Add("Check for updates…", null, delegate { CheckForUpdates(); });
+                menu.Items.Add("Remove Files Direct…", null, delegate { RemoveApp(); });
+                menu.Items.Add(new ToolStripSeparator());
+            }
             menu.Items.Add("Quit Files Direct", null, delegate { Quit(); });
             icon.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             icon.Text = "Files Direct";
@@ -177,13 +241,18 @@ namespace FilesDirect
             };
             icon.Visible = true;
             ThreadPool.RegisterWaitForSingleObject(quitSignal, delegate (object state, bool timedOut) { ui.Post(delegate { Quit(); }, null); }, null, -1, true);
-            // the right-click entry is written, or written again, each time the app starts: it points at the launcher in this folder
-            ThreadPool.QueueUserWorkItem(delegate
+            // the right-click entry is written, or written again, each time the app starts: it points at the launcher in this folder.
+            // The Store package does not: its entry is in its manifest, and the manifest alone adds it and removes it.
+            if (!Program.Packaged)
             {
-                int status;
-                Program.Run("menu install --app --launcher \"" + Application.ExecutablePath + "\"", out status);
-            });
-            if (updateNow) ThreadPool.QueueUserWorkItem(delegate { Install(); });
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    int status;
+                    Program.Run("menu install --app --launcher \"" + Application.ExecutablePath + "\"", out status);
+                });
+            }
+            listener = Program.StartKept("listen --app");
+            if (updateNow && !Program.Packaged) ThreadPool.QueueUserWorkItem(delegate { Install(); });
         }
 
         void SendFiles()
@@ -263,6 +332,7 @@ namespace FilesDirect
 
         void Quit()
         {
+            try { if (listener != null && !listener.HasExited) listener.Kill(); } catch (Exception) { }
             icon.Visible = false;
             ExitThread();
         }

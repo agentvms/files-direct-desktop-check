@@ -5,7 +5,7 @@
  */
 import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, PREVIEW_ONE_MS, PREVIEW_TOTAL_MS, WINDOW_BLOCKS, previewLimits, type PreviewLimits } from '../../../shared/config.ts';
 import { cleanNote } from '../../../shared/ask.ts';
-import { type Control, type FileInfo, DIGEST_BYTES, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
+import { type Control, type FileInfo, type PairWire, DIGEST_BYTES, PAIR_WIRE_MAX, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
 import { Meter } from './meter.ts';
 import { cleanPaths } from './paths.ts';
 import { type PreviewImage, fromBase64, isPreviewKind, isPreviewSource, isPreviewType, looksLike, toBase64 } from './preview.ts';
@@ -55,6 +55,8 @@ export type TransferEvent =
   | { k: 'asked'; b: number; note: string }
   /** Sender: the other side said no thanks. Nothing was sent. */
   | { k: 'declined'; b: number; by: Side }
+  /** The other page says something about remembering this device (saved devices). The page reads and checks it; nothing here keeps it. */
+  | { k: 'pair'; m: PairWire }
   /** The other side sent something that makes no sense, or the channel was lost while sending. */
   | { k: 'error'; why: 'unreadable' | 'lost' | 'refresh'; b?: number; /** Where in the loop it was noticed: for tests and bug reports, never shown. */ site?: string };
 
@@ -286,6 +288,11 @@ export class Session {
     return b;
   }
 
+  /** Says something to the other page about remembering this device (saved devices). */
+  pair(m: PairWire): void {
+    this.control(m);
+  }
+
   /** The connection now goes through our servers (or no longer does): the limits of previews that come after follow. */
   setRelay(on: boolean): void {
     this.relay = on;
@@ -484,6 +491,7 @@ export class Session {
       const msg = JSON.parse(data) as Control;
       // a preview frame is at most a piece as a whole, whatever else it carries (padding, extra properties): a bigger one is dropped like any out-of-bounds preview
       if (msg.t === 'preview' && new TextEncoder().encode(data).length > PIECE_SIZE) return;
+      if (msg.t === 'pair') return data.length <= PAIR_WIRE_MAX && typeof msg.p === 'string' ? this.emit({ k: 'pair', m: msg }) : undefined; // the page checks every field; a frame that is too big is dropped like an out-of-bounds preview
       return this.processControl(msg);
     }
     const piece = decodePiece(data);

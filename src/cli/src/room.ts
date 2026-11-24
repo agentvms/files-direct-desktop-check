@@ -12,6 +12,7 @@ import { later } from '../../web/src/later.ts';
 import { type Connection, type Route, createConnection, recordSender, roomRecord, cleanRef } from '../../web/src/connection.ts';
 import { type JoinFailure, type Message, type Signal, type Target, openSignal } from '../../web/src/signal.ts';
 import { type Sendable, type TransferEvent, Session } from '../../web/src/transfer/engine.ts';
+import type { PairWire } from '../../web/src/transfer/frames.ts';
 import { PathChannel } from './channel.ts';
 import { type Saver, createSaver } from './fs-sink.ts';
 import { type Picked, type Skipped, sendableOf } from './fs-source.ts';
@@ -46,7 +47,37 @@ export type ProgramEvent =
   /** While the transfer goes through our servers: how much of the free amount this room's address has used, in bytes, as the server counts it. */
   | { event: 'meter'; used: number; free: number }
   | { event: 'finished'; files: number; bytes: number; route: Route | null }
+  /** Saved devices (files-direct-40): this run offered to remember the other device, was asked, kept it, or could not. The name is the other device's own, as data. */
+  | { event: 'remember'; state: 'offered' | 'asked' | 'saved' | 'failed'; name?: string; why?: string }
+  /** A saved device that is here asked to send: its name as this computer keeps it. */
+  | { event: 'invite'; device: string }
+  /** The program is watching for saved devices. */
+  | { event: 'listening'; devices: number }
+  /** A saved device forgot this computer: it is no longer kept. */
+  | { event: 'forgotten'; device: string }
   | { event: 'failed'; reason: Reason; message: string };
+
+/**
+ * What a run needs from the saved-devices code (files-direct-40, cli/src/pair-host.ts). The run says `pair: true` in its device message when it has one, carries the pair frames of the
+ * connection to it, and does not end while a try at remembering is under way.
+ */
+export interface PairPort {
+  attach(send: (m: PairWire) => void): void;
+  /** The other device said it can remember devices. */
+  other(canPair: boolean): void;
+  connected(on: boolean): void;
+  handle(m: PairWire): void;
+  /** Resolves when no try at remembering is under way. */
+  settled(): Promise<void>;
+  dispose(): void;
+}
+
+/** What is offered, as the person at a window is asked about it. */
+export interface OfferedBatch {
+  files: number;
+  bytes: number;
+  names: { name: string; size: number }[];
+}
 
 /** A file that was saved whole: the name the other side gave it (data), its size, and its place on this computer. */
 export interface SavedFile {
@@ -78,6 +109,7 @@ export interface KnockOptions {
 }
 
 export interface SendOptions {
+  pair?: PairPort;
   files: Picked[];
   skipped?: Skipped[];
   password?: string;
@@ -90,6 +122,7 @@ export interface SendOptions {
 
 /** Asking for files (files-direct-28): the room is opened here, and what comes into it is received by the same rules as `receive`, with the ask itself as the yes. */
 export interface AskOptions {
+  pair?: PairPort;
   /** What is wanted, for the other person to read. Cleaned and cut like a file name; never sent to the room service. */
   note?: string;
   /** Where the files go. */
@@ -106,6 +139,8 @@ export interface AskOptions {
 }
 
 export interface ReceiveOptions {
+  pair?: PairPort;
+  confirm?: Run['confirm'];
   /** A room link, or the nine-digit code. */
   target: { kind: 'link'; secret: string } | { kind: 'code'; code: string };
   dest: string;
@@ -164,6 +199,10 @@ export class Run {
   private asking: string | null = null;
   private guard: Guard | undefined;
   private joinedOnce = false;
+  /** Saved devices: set by the caller before the run starts. */
+  pair: PairPort | null = null;
+  /** A person at a window answers for a receiving run, after the rules here have looked at what is offered: yes takes it, no sends the other side a no. Without it, receiving is the yes. */
+  confirm: ((offer: OfferedBatch) => Promise<boolean>) | null = null;
   /** The question about the visitor who knocked last, while it is open. */
   private knockGone: AbortController | null = null;
   private sendRecord!: (r: ReturnType<typeof roomRecord>) => void;
@@ -240,6 +279,7 @@ export class Run {
     if (this.ended) return;
     this.ended = true;
     this.knockGone?.abort();
+    this.pair?.dispose();
     const ok = outcome === 'finished';
     const message = reasonText(outcome, { wait: ctx.wait, install: this.env.install });
     const result: Result = { outcome, message, files: this.batch?.files ?? this.fileCount, bytes: this.batch?.bytes ?? 0, route: this.route, saved: this.saved, ...(ctx.wait === undefined ? {} : { wait: ctx.wait }) };
@@ -349,6 +389,7 @@ export class Run {
       onNoRelay: () => this.keepRecord(),
       onLog: () => this.keepRecord(),
       onLost: () => {
+        this.pair?.connected(false);
         if (this.ended) return;
         // someone who opened an ask and went away before sending anything is not the end of it: the link still works for their next try
         if (this.asking !== null && !this.batch) return this.setState('waiting');
@@ -373,8 +414,9 @@ export class Run {
   // ---- the room's messages --------------------------------------------------------------------
 
   private takeDevice(d: unknown): void {
-    const raw = (d ?? {}) as { device?: unknown; joined?: unknown };
+    const raw = (d ?? {}) as { device?: unknown; joined?: unknown; pair?: unknown };
     this.visited = true;
+    this.pair?.other(raw.pair === true);
     this.st.other = cleanDevice(raw.device);
     const j = cleanJoined(raw.joined);
     if (j && this.role === 'sender') this.st.joined = j;
@@ -436,7 +478,7 @@ export class Run {
       this.st.joined = null;
       this.st.other = null;
       this.setState('connecting');
-      this.signal.send({ t: 'device', d: { device: this.env.device } });
+      this.signal.send({ t: 'device', d: { device: this.env.device, ...(this.pair ? { pair: true } : {}) } });
       this.keepRecord();
       this.conn.onSignal(m);
     } else if (m.t === 'room-closed' || m.t === 'receiver-left') {
@@ -471,7 +513,7 @@ export class Run {
       this.st.same = typeof room.same === 'boolean' ? room.same : null;
       this.st.ref = cleanRef(room.ref);
       if (this.st.same !== null) this.conn.hint(this.st.same);
-      this.signal.send({ t: 'device', d: { device: this.env.device, joined: this.st.joined } });
+      this.signal.send({ t: 'device', d: { device: this.env.device, joined: this.st.joined, ...(this.pair ? { pair: true } : {}) } });
       this.setState('connecting');
       this.keepRecord();
     } else if (m.t === 'device') this.takeDevice(m.d);
@@ -500,6 +542,8 @@ export class Run {
       emit: (e) => this.onEngine(e),
     });
     this.session = session;
+    this.pair?.attach((m) => session.pair(m));
+    this.pair?.connected(true);
     if (this.asking !== null) session.askFor(this.asking); // the note goes over the connection to the other device and nowhere else
     else if (this.role === 'sender') session.send(this.sent);
   }
@@ -554,6 +598,9 @@ export class Run {
       case 'file-failed':
         this.finish(e.why === 'storage' ? 'no_room_left' : 'damaged');
         break;
+      case 'pair':
+        this.pair?.handle(e.m);
+        break;
       case 'declined':
         this.finish('declined');
         break;
@@ -565,7 +612,8 @@ export class Run {
         this.note({ event: e.k, by: e.by === 'local' ? 'this' : 'other' });
         break;
       case 'complete':
-        void Promise.all([...this.pending]).then(() => this.finish('finished'));
+        // a try at remembering the other device (files-direct-40) is allowed to finish: the answer may come a moment after the last file
+        void Promise.all([...this.pending]).then(() => this.pair?.settled()).then(() => this.finish('finished'));
         break;
       case 'error':
         this.finish(e.why === 'lost' ? 'lost' : e.why === 'refresh' ? 'out_of_date' : 'unreadable');
@@ -602,6 +650,15 @@ export class Run {
       this.finish(clash.some((c) => c.reason === 'would_overwrite') ? 'would_overwrite' : 'not_allowed');
       return this.session.decline(b);
     }
+    if (this.confirm) {
+      // a person at the window is asked, with the names and sizes of what is offered; nothing is taken before their yes
+      const yes = await this.confirm({ files: batch.files, bytes: batch.bytes, names: names.slice(0, MAX_LISTED).map(([k, name]) => ({ name, size: this.sizes.get(k) ?? 0 })) }).catch(() => false);
+      if (this.ended) return;
+      if (!yes) {
+        this.finish('cancelled');
+        return this.session.decline(b);
+      }
+    }
     this.session.accept(b);
     this.note({ event: 'accepted' });
   }
@@ -623,6 +680,7 @@ export class Run {
 /** Starts a sending run. Resolves at once with the run; `run.opened` says when the link and code are ready. */
 export function send(env: RoomEnv, o: SendOptions, onEvent?: (e: ProgramEvent) => void): Run {
   const run = new Run(env, 'sender', onEvent);
+  run.pair = o.pair ?? null;
   void run.startSend(o);
   return run;
 }
@@ -631,6 +689,7 @@ export function send(env: RoomEnv, o: SendOptions, onEvent?: (e: ProgramEvent) =
 export function ask(env: RoomEnv, o: AskOptions, onEvent?: (e: ProgramEvent) => void): Run {
   const run = new Run(env, 'sender', onEvent);
   run.limits = { maxSize: o.maxSize, maxFiles: o.maxFiles, overwrite: false };
+  run.pair = o.pair ?? null;
   void run.startAsk(o);
   return run;
 }
@@ -639,6 +698,8 @@ export function ask(env: RoomEnv, o: AskOptions, onEvent?: (e: ProgramEvent) => 
 export function receive(env: RoomEnv, o: ReceiveOptions, onEvent?: (e: ProgramEvent) => void): Run {
   const run = new Run(env, 'receiver', onEvent);
   run.limits = { maxSize: o.maxSize, overwrite: o.overwrite ?? false };
+  run.pair = o.pair ?? null;
+  run.confirm = o.confirm ?? null;
   void run.startReceive(o);
   // a receiving run is open once its offer was listed and taken
   void (async () => {

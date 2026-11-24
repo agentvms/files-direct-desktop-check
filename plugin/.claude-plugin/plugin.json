@@ -1,7 +1,7 @@
 {
   "name": "files-direct",
   "description": "Send files and folders to a person's phone or computer, or receive them, with no browser. It runs a small server on your machine, and files go straight to the other device.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "Files Direct"
   },
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "files-direct@0.2.0",
+        "files-direct@0.3.0",
         "mcp"
       ]
     }

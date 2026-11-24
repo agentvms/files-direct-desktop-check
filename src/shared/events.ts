@@ -9,6 +9,8 @@ export const EVENT_NAMES = [
   'room_opened',
   'room_joined',
   'join_declined',
+  'device_remembered',
+  'device_forgotten',
   'report_sent',
   'connected',
   'connection_outcome',

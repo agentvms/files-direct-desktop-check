@@ -150,3 +150,35 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" desktop/files-direct-* desktop/feed.json desktop/feed.json.sig --clobber
           # only now is this the latest release: the site's list of updates is the latest release's, so the old one keeps working until the new one is complete
           gh release edit "$GITHUB_REF_NAME" --latest
+
+  # The Microsoft Store package of the Windows app (files-direct-37): built like the desktop files, on a version tag, on a Windows machine. It is kept as a workflow artifact for whoever
+  # submits it to the Store (the Store signs what it lists and hands it to people from there); it is never attached to the release, never listed in the signed list of updates, never published
+  # to npm. The artifact is named store-msix, which the desktop publish job (it takes desktop-*) does not pick up. The package's publisher identity comes from three repository variables
+  # (docs/STORE.md); until they are set the package carries placeholders, which the Store would refuse, and the build says so.
+  store-build:
+    needs: release
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci
+      - name: Build the Store package
+        env:
+          FD_STORE_IDENTITY_NAME: ${{ vars.FD_STORE_IDENTITY_NAME }}
+          FD_STORE_PUBLISHER: ${{ vars.FD_STORE_PUBLISHER }}
+          FD_STORE_PUBLISHER_NAME: ${{ vars.FD_STORE_PUBLISHER_NAME }}
+        run: node scripts/app-store.mjs build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: store-msix
+          path: |
+            store-out/store-files-direct-*-x64.msix
+            store-out/build-store.json
+          if-no-files-found: error
