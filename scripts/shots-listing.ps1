@@ -143,7 +143,7 @@ if ($tray) {
     $b = $e.Current.BoundingRectangle
     if ($b.Width -gt 80 -and $b.Width -lt 450 -and $b.Height -gt 80 -and $b.Height -lt 450 -and -not $e.Current.IsOffscreen) { Say ("top-level candidate: " + $e.Current.ClassName + " | " + $e.Current.Name + " | " + $b.X + "," + $b.Y + " " + $b.Width + "x" + $b.Height); if (-not $m -and ($e.Current.ClassName -like 'WindowsForms10*' -or $e.Current.ClassName -eq '#32768')) { $m = $e } }
   }
-  if ($m) { $r = $m.Current.BoundingRectangle; Say ("tray menu rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height); Compose $img ($r.X - 6) ($r.Y - 6) ($r.Width + 12) ($r.Height + 12) 3.2 '1-tray-menu' }
+  if ($m) { $r = $m.Current.BoundingRectangle; Say ("tray menu rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height); Compose $img $r.X $r.Y $r.Width $r.Height 3.4 '1-tray-menu' }
   else { Say "NOT MADE: 1-tray-menu: the menu window was not found"; $img.Dispose() }
   [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep 1; [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
 } else { Say "NOT MADE: 1-tray-menu: icon not found" }
@@ -157,13 +157,14 @@ for ($t = 0; $t -lt 60 -and -not $url; $t++) {
   if ($cmd -match '--app=(http://127\.0\.0\.1:\d+/w/[\w-]+/)') { $url = $Matches[1] } else { Start-Sleep 1 }
 }
 Say ("window address: " + $url)
-function WinShot($name) {
-  Start-Sleep 1
+function WinShot($name, $height) {
   $w = WindowRect 'Chrome_WidgetWin_1' 'Files Direct*'
   if (-not $w) { Say ("NOT MADE: " + $name + ": app window not found"); return }
+  [void][Disp]::MoveWindow([IntPtr]$w.Current.NativeWindowHandle, 700, 150, 520, $height, $true); Start-Sleep 2
   $r = $w.Current.BoundingRectangle
   $img = Grab
-  Compose $img $r.X $r.Y $r.Width $r.Height 1.4 $name
+  Say ("window rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height)
+  Compose $img ($r.X + 8) ($r.Y + 1) ($r.Width - 16) ($r.Height - 9) 1.45 $name
 }
 if ($url) {
   $waiting = $null
@@ -172,7 +173,7 @@ if ($url) {
   $w = WindowRect 'Chrome_WidgetWin_1' 'Files Direct*'
   if ($w) { [void][Disp]::MoveWindow([IntPtr]$w.Current.NativeWindowHandle, 700, 150, 520, 600, $true); Start-Sleep 2 }
   Say ("link shown: " + $waiting.link)
-  WinShot '3-window-link-qr-code'
+  WinShot '3-window-link-qr-code' 560
   if ($waiting) {
     $to = 'C:\Users\Public\Received'; New-Item -ItemType Directory -Force $to | Out-Null
     $node = Join-Path $app 'node.exe'; $engine = Join-Path $app 'files-direct.mjs'
@@ -181,8 +182,8 @@ if ($url) {
     for ($t = 0; $t -lt 600; $t++) {
       try { $s = Invoke-RestMethod ($url + 'state') } catch { Start-Sleep -Milliseconds 300; continue }
       if ($phases[-1] -ne $s.phase) { $phases += $s.phase; Say ("phase: " + $s.phase) }
-      if ($s.phase -eq 'transferring' -and $n -lt 4) { $n++; if ($n -eq 3) { WinShot '4-transfer-running' }; Start-Sleep -Milliseconds 600; continue }
-      if ($s.phase -eq 'done' -or $s.phase -eq 'failed' -or $s.phase -eq 'cancelled') { Start-Sleep 2; WinShot '5-transfer-finished'; break }
+      if ($s.phase -eq 'transferring' -and $n -lt 4) { $n++; if ($n -eq 3) { WinShot '4-transfer-running' 380 }; Start-Sleep -Milliseconds 600; continue }
+      if ($s.phase -eq 'done' -or $s.phase -eq 'failed' -or $s.phase -eq 'cancelled') { Start-Sleep 2; WinShot '5-transfer-finished' 340; break }
       Start-Sleep -Milliseconds 300
     }
     Say ("phases seen: " + ($phases -join ','))
@@ -213,7 +214,7 @@ if ($item) {
   $c = Center $item; Click $c[0] $c[1] $false; Start-Sleep 1; Click $c[0] $c[1] $true; Start-Sleep 3
   $img = Grab
   $e = WindowRect 'CabinetWClass' $null
-  if ($e) { $r = $e.Current.BoundingRectangle; Say ("explorer rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height); Compose $img ($r.X - 8) ($r.Y - 8) ($r.Width + 16) ($r.Height + 16) 1.3 '2-right-click-menu' }
+  if ($e) { $r = $e.Current.BoundingRectangle; Say ("explorer rect " + $r.X + "," + $r.Y + " " + $r.Width + "x" + $r.Height); Compose $img ($r.X + 8) ($r.Y + 1) ($r.Width - 16) ($r.Height - 9) 1.3 '2-right-click-menu' }
   else { Say "NOT MADE: 2-right-click-menu: explorer window not found"; $img.Dispose() }
   [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
 } else { Say "NOT MADE: 2-right-click-menu: no list item" }
