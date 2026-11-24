@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 jobs:
-  store-menu:
+  listing:
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
@@ -17,15 +17,20 @@ jobs:
           node-version: '22.14.0'
           cache: npm
       - run: npm ci
-      - name: Build the Store package of this tree (test identity)
+      - name: Build the Store package of this tree with the real identity
+        env:
+          FD_STORE_IDENTITY_NAME: ${{ vars.FD_STORE_IDENTITY_NAME }}
+          FD_STORE_PUBLISHER: ${{ vars.FD_STORE_PUBLISHER }}
+          FD_STORE_PUBLISHER_NAME: ${{ vars.FD_STORE_PUBLISHER_NAME }}
         run: node scripts/app-store.mjs build
-      - name: Install it with a test certificate and show the right-click menu
+      - name: Take the listing shots
         shell: powershell
-        run: ./scripts/shots-store.ps1
+        run: ./scripts/shots-listing.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: shots-store
+          name: shots-listing
           path: |
-            shots
+            listing
+            raw
             store-out/build-store.json

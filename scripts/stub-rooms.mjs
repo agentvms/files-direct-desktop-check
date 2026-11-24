@@ -5,7 +5,10 @@
 // machine's own network. It keeps nothing and writes nothing but its one line on start.
 // Prints one line, {"port": N}, when it is ready (FD_STUB_PORT picks the port; default any). Stops when its input closes.
 import { createHash } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer as createHttp } from 'node:http';
+import { createServer as createHttps } from 'node:https';
+import { readFileSync } from 'node:fs';
+const createServer = (handler) => (process.env.FD_STUB_PFX ? createHttps({ pfx: readFileSync(process.env.FD_STUB_PFX), passphrase: process.env.FD_STUB_PFX_PASS }, handler) : createHttp(handler));
 
 const HOME = `<!doctype html><title>stand-in</title><script type="application/json" id="fd-config">${JSON.stringify({ ice: [], route: { switch: false } })}</script>`;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -71,7 +74,7 @@ server.on('upgrade', (req, socket) => {
   rooms.set(m[1], room);
   room[role] = socket;
   const other = () => room[role === 'sender' ? 'receiver' : 'sender'];
-  if (role === 'sender') tell(socket, { t: 'code', code: '123456789', ref: '0123456789ab' });
+  if (role === 'sender') tell(socket, { t: 'code', code: process.env.FD_STUB_CODE ?? '123456789', ref: '0123456789ab' });
   else if (room.sender) for (const s of [room.sender, socket]) tell(s, { t: 'ready', d: { same: true, via: 'link', ref: '0123456789ab' } });
   socket.on(
     'data',
