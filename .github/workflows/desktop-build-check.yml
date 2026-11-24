@@ -93,7 +93,9 @@ jobs:
         run: |
           Get-ChildItem dl | Format-Table Name, Length
           $setup = (Get-ChildItem dl -Filter 'files-direct-setup-*-win-x64.exe').FullName
-          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          # no -Wait: it would also wait for the tray program the installer starts and never come back
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
+          if (-not $p.WaitForExit(240000)) { Write-Error 'the installer did not end in 4 minutes'; exit 1 }
           "installer exit code: $($p.ExitCode)"
           Start-Sleep -Seconds 25
           $dir = Join-Path $env:LOCALAPPDATA 'Programs\Files Direct'
