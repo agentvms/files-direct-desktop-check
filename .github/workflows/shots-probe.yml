@@ -1,12 +1,13 @@
-name: shots-probe
+name: shots
 on:
   push:
     branches: [shots]
 permissions:
   contents: read
 jobs:
-  probe:
+  shots:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -15,58 +16,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: display modes, set the largest, screenshot
-        shell: pwsh
-        run: |
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          Add-Type @"
-          using System; using System.Runtime.InteropServices;
-          public class Disp {
-            [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
-            public struct DEVMODE {
-              [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmDeviceName;
-              public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields;
-              public int dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
-              public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
-              [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmFormName;
-              public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
-              public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
-            }
-            [DllImport("user32.dll")] public static extern bool EnumDisplaySettings(string d, int m, ref DEVMODE dm);
-            [DllImport("user32.dll")] public static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
-          }
-          "@
-          $dm = New-Object Disp+DEVMODE; $dm.dmSize = [int][Runtime.InteropServices.Marshal]::SizeOf($dm)
-          [void][Disp]::EnumDisplaySettings($null, -1, [ref]$dm)
-          "current: $($dm.dmPelsWidth)x$($dm.dmPelsHeight) $($dm.dmBitsPerPel)bpp"
-          $modes = @(); $i = 0
-          while ([Disp]::EnumDisplaySettings($null, $i, [ref]$dm)) { $modes += "$($dm.dmPelsWidth)x$($dm.dmPelsHeight)"; $i++ }
-          "modes: " + (($modes | Sort-Object -Unique) -join ' ')
-          $best = $null; $bw = 0
-          $i = 0
-          while ([Disp]::EnumDisplaySettings($null, $i, [ref]$dm)) { if ($dm.dmPelsWidth -gt $bw -and $dm.dmBitsPerPel -ge 24) { $bw = $dm.dmPelsWidth; $best = $dm.psobject.Copy() }; $i++ }
-          "largest mode: $bw"
-          $dm2 = New-Object Disp+DEVMODE; $dm2.dmSize = [int][Runtime.InteropServices.Marshal]::SizeOf($dm2)
-          [void][Disp]::EnumDisplaySettings($null, -1, [ref]$dm2)
-          foreach ($want in @(@(1920,1080), @(1600,900), @(1366,768))) {
-            $dm2.dmPelsWidth = $want[0]; $dm2.dmPelsHeight = $want[1]; $dm2.dmFields = 0x80000 -bor 0x100000
-            $r = [Disp]::ChangeDisplaySettings([ref]$dm2, 0)
-            "set $($want -join 'x'): result $r"
-            if ($r -eq 0) { break }
-          }
-          Start-Sleep 2
-          $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          "screen now: $($s.Width)x$($s.Height)"
-          Start-Process notepad; Start-Sleep 3
-          $bmp = New-Object Drawing.Bitmap $s.Width, $s.Height
-          $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($s.Location, [Drawing.Point]::Empty, $s.Size)
-          New-Item -ItemType Directory -Force shots | Out-Null
-          $bmp.Save("shots/probe-$($s.Width)x$($s.Height).png")
-          "saved"
-          [Environment]::OSVersion.VersionString
-          [Console]::OutputEncoding.EncodingName
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22.14.0'
+      - name: Install the released v0.2.1 Windows installer and take the shots
+        shell: powershell
+        run: ./scripts/shots.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: probe-${{ matrix.os }}
+          name: shots-${{ matrix.os }}
           path: shots
