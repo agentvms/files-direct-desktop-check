@@ -173,7 +173,7 @@ if ($url) {
   $w = WindowRect 'Chrome_WidgetWin_1' 'Files Direct*'
   if ($w) { [void][Disp]::MoveWindow([IntPtr]$w.Current.NativeWindowHandle, 700, 150, 520, 600, $true); Start-Sleep 2 }
   Say ("link shown: " + $waiting.link)
-  WinShot '3-window-link-qr-code' 560
+  WinShot '3-window-link-qr-code' 620
   if ($waiting) {
     $to = 'C:\Users\Public\Received'; New-Item -ItemType Directory -Force $to | Out-Null
     $node = Join-Path $app 'node.exe'; $engine = Join-Path $app 'files-direct.mjs'
