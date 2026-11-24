@@ -55,8 +55,9 @@ Start-Sleep 2
 $setup = Join-Path $env:RUNNER_TEMP 'setup.exe'
 Invoke-WebRequest -Uri 'https://github.com/agentvms/files-direct-cli/releases/download/v0.2.1/files-direct-setup-0.2.1-win-x64.exe' -OutFile $setup
 Say ("installer " + (Get-Item $setup).Length + " bytes, sha256 " + (Get-FileHash $setup).Hash)
-$p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
-Say ("installer exit " + $p.ExitCode)
+$p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
+[void]$p.WaitForExit(180000)
+Say ("installer exited: " + $p.HasExited + " code " + $p.ExitCode)
 $app = Join-Path $env:LOCALAPPDATA 'Programs\Files Direct'
 if (-not (Test-Path $app)) { Say "app folder not at $app"; Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Programs') | ForEach-Object { Say $_.FullName } }
 $exe = Join-Path $app 'Files Direct.exe'
@@ -136,5 +137,5 @@ if ($url) {
 }
 Shot 'zz-last'
 $stub.StandardInput.Close()
-$un = Join-Path $app 'unins000.exe'; if (Test-Path $un) { Start-Process $un -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
+$un = Join-Path $app 'unins000.exe'; if (Test-Path $un) { $u = Start-Process $un -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru; [void]$u.WaitForExit(120000) }
 Say "done"
